@@ -1,19 +1,45 @@
 use crate::debugger_command::DebuggerCommand;
-use crate::inferior::Inferior;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
+use crate::inferior::{Inferior, Status};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+
+fn parse_address(addr: &str) -> Option<u64> {
+    let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+        &addr[2..]
+    } else {
+        &addr
+    };
+    u64::from_str_radix(addr_without_0x, 16).ok()
+}
 
 pub struct Debugger {
     target: String,
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
+    debug_data: DwarfData,
+    breakpoints: Vec<u64>,
 }
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
-        // TODO (milestone 3): initialize the DwarfData
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val) => val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                println!("Could not open file {}", target);
+                std::process::exit(1);
+            }
+            Err(DwarfError::DwarfFormatError(err)) => {
+                println!(
+                    "Could not load debugging symbols from {}: {:?}",
+                    target, err
+                );
+                std::process::exit(1);
+            }
+        };
+        debug_data.print();
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -25,25 +51,103 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
+            debug_data,
+            breakpoints: Vec::new(),
         }
+    }
+
+    pub fn reap(&mut self) {
+        if let Some(inferior) = &mut self.inferior {
+            println!("Killing running inferior (pid {})", inferior.pid());
+            inferior.kill().unwrap();
+        }
+    }
+
+    pub fn report(&self, status: Status) {
+        match status {
+            Status::Stopped(sig, rip) => {
+                println!("Child stopped (signal {})", sig);
+                if let Some(line) = self.debug_data.get_line_from_addr(rip) {
+                    println!("Stopped at {}:{}", line.file, line.number);
+                }
+            }
+            Status::Signaled(sig) => {
+                println!("Child died (signal {})", sig.to_string())
+            }
+            Status::Exited(status) => println!("Child exited (status {})", status),
+        };
     }
 
     pub fn run(&mut self) {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    self.reap();
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.breakpoints) {
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        // TODO (milestone 1): make the inferior run
-                        // You may use self.inferior.as_mut().unwrap() to get a mutable reference
-                        // to the Inferior object
+                        self.report(self.inferior.as_ref().unwrap().cont().unwrap());
                     } else {
                         println!("Error starting subprocess");
                     }
                 }
                 DebuggerCommand::Quit => {
+                    self.reap();
                     return;
+                }
+                DebuggerCommand::Cont => {
+                    if let Some(inferior) = &self.inferior {
+                        self.report(inferior.cont().unwrap());
+                    } else {
+                        println!("No subprocess");
+                    }
+                }
+                DebuggerCommand::Backtrace => {
+                    if let Some(inferior) = &self.inferior {
+                        inferior.print_backtrace(&self.debug_data).unwrap();
+                    } else {
+                        println!("No subprocess");
+                    }
+                }
+                DebuggerCommand::Break(pos) => {
+                    let mut address = None;
+                    if pos.starts_with("*") {
+                        if let Some(addr) = parse_address(&pos[1..]) {
+                            println!("Set breakpoint {} at {}", self.breakpoints.len(), &pos[1..]);
+                            address = Some(addr);
+                        }
+                    } else if let Ok(line_number) = u64::from_str_radix(&pos, 10) {
+                        if let Some(addr) = self
+                            .debug_data
+                            .get_addr_for_line(None, line_number as usize)
+                        {
+                            println!(
+                                "Set breakpoint {} at 0x{:x} (line {})",
+                                self.breakpoints.len(),
+                                addr,
+                                &pos
+                            );
+                            address = Some(addr as u64);
+                        }
+                    } else if let Some(addr) = self.debug_data.get_addr_for_function(None, &pos) {
+                        println!(
+                            "Set breakpoint {} at 0x{:x} (function {})",
+                            self.breakpoints.len(),
+                            addr,
+                            &pos
+                        );
+                        address = Some(addr as u64);
+                    }
+
+                    if let Some(addr) = address {
+                        if let Some(inferior) = &mut self.inferior {
+                            inferior.set_breakpoint(addr).unwrap();
+                        } else {
+                            self.breakpoints.push(addr);
+                        }
+                    } else {
+                        println!("Set breakpoint at {} failed", &pos);
+                    }
                 }
             }
         }

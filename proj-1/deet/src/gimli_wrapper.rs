@@ -23,12 +23,9 @@ pub fn load_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<
             .section_data_by_name(id.name())
             .unwrap_or(borrow::Cow::Borrowed(&[][..])))
     };
-    // Load a supplementary section. We don't have a supplementary object file,
-    // so always return an empty slice.
-    let load_section_sup = |_| Ok(borrow::Cow::Borrowed(&[][..]));
 
     // Load all of the sections.
-    let dwarf_cow = gimli::Dwarf::load(&load_section, &load_section_sup)?;
+    let dwarf_cow = gimli::Dwarf::load(&load_section)?;
 
     // Borrow a `Cow<[u8]>` to create an `EndianSlice`.
     let borrow_section: &dyn for<'a> Fn(
@@ -227,7 +224,7 @@ pub fn load_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<
 
                     // Determine line/column. DWARF line/column is never 0, so we use that
                     // but other applications may want to display this differently.
-                    let line = row.line().unwrap_or(0);
+                    let line = row.line().map(|nz|nz.get()).unwrap_or(0);
 
                     if let Some(file) = file {
                         file.lines.push(Line {
@@ -339,6 +336,13 @@ fn get_attr_value<R: Reader>(
         }
         gimli::AttributeValue::DebugStrRef(offset) => {
             if let Ok(s) = dwarf.debug_str.get_str(offset) {
+                Ok(DebugValue::Str(format!("{}", s.to_string_lossy()?)))
+            } else {
+                Ok(DebugValue::Str(format!("<.debug_str+0x{:08x}>", offset.0)))
+            }
+        }
+        gimli::AttributeValue::DebugLineStrRef(offset) => {
+            if let Ok(s) = dwarf.debug_line_str.get_str(offset) {
                 Ok(DebugValue::Str(format!("{}", s.to_string_lossy()?)))
             } else {
                 Ok(DebugValue::Str(format!("<.debug_str+0x{:08x}>", offset.0)))
@@ -608,7 +612,10 @@ fn dump_op<R: Reader, W: Write>(
         | gimli::Operation::PushObjectAddress
         | gimli::Operation::TLS
         | gimli::Operation::CallFrameCFA
-        | gimli::Operation::StackValue => {}
+        | gimli::Operation::StackValue
+        | gimli::Operation::WasmGlobal { .. }
+        | gimli::Operation::WasmLocal { .. }
+        | gimli::Operation::WasmStack { .. } => {}
     };
     Ok(())
 }

@@ -1,10 +1,26 @@
 mod debugger;
 mod debugger_command;
 mod inferior;
+mod dwarf_data;
+mod gimli_wrapper;
 
 use crate::debugger::Debugger;
 use nix::sys::signal::{signal, SigHandler, Signal};
 use std::env;
+
+/// `add_one` 将指定值加1
+///
+/// # Examples11
+///
+/// ```
+/// let arg = 5;
+/// let answer = world_hello::compute::add_one(arg);
+///
+/// assert_eq!(6, answer);
+/// ```
+pub fn add_one(x: i32) -> i32 {
+    x + 1
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
