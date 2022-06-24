@@ -1,5 +1,5 @@
-/balancebeam/.cargo/
-/balancebeam/target/
-/balancebeam/Cargo.lock
+.cargo/
+target/
+Cargo.lock
 .idea
 .*.swp
